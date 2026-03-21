@@ -26,6 +26,7 @@ echo "================================================================"
 
 # ── Injected variables (filled by Terraform templatefile()) ──────────────────
 ADMIN_USER="${admin_username}"
+ADMIN_PASS_B64="${admin_password_b64}"
 SSH_PUBLIC_KEY="${ssh_public_key}"
 SSH_PORT="${ssh_port}"
 PANEL_PORT="${panel_port}"
@@ -80,6 +81,12 @@ chmod 700 "$USER_HOME/.ssh"
 chmod 600 "$USER_HOME/.ssh/authorized_keys"
 chown -R "$ADMIN_USER:$ADMIN_USER" "$USER_HOME/.ssh"
 
+if [[ -n "$ADMIN_PASS_B64" ]]; then
+  ADMIN_DEC=$(printf '%s' "$ADMIN_PASS_B64" | base64 -d) || { echo "ERROR: admin_password decode failed"; exit 1; }
+  printf '%s:%s\n' "$ADMIN_USER" "$ADMIN_DEC" | chpasswd
+  echo "Password set for $ADMIN_USER (console / local login). SSH remains key-only."
+fi
+
 # Also add to root as emergency fallback
 mkdir -p /root/.ssh
 grep -qF "$SSH_PUBLIC_KEY" /root/.ssh/authorized_keys 2>/dev/null \
@@ -120,7 +127,9 @@ set_ssh_opt "ClientAliveCountMax" "2"
 set_ssh_opt "LoginGraceTime"         "30"
 
 sshd -t || { echo "ERROR: sshd config invalid!"; cp "$${SSHD_CONFIG}.bak" "$SSHD_CONFIG"; exit 1; }
-echo "SSH configured on port $SSH_PORT."
+# Apply new port before UFW: otherwise sshd still listens on 22 while UFW only allows $SSH_PORT → lockout.
+systemctl restart ssh
+echo "SSH configured and listening on port $SSH_PORT."
 
 # =============================================================================
 #  4. UFW firewall
@@ -136,15 +145,12 @@ ufw default allow outgoing > /dev/null
 ufw allow "$VLESS_PORT"/tcp comment "VLESS proxy" > /dev/null
 echo "Port $VLESS_PORT/tcp (VLESS) open to all."
 
-# SSH and panel — each home IP
+# SSH and panel — each home IP (ping: OCI security list only; UFW here rejects proto icmp via CLI)
 for ip in $HOME_IPS; do
     ufw allow from "$ip" to any port "$SSH_PORT"  proto tcp comment "SSH from $ip"   > /dev/null
     ufw allow from "$ip" to any port "$PANEL_PORT" proto tcp comment "Panel from $ip" > /dev/null
     echo "SSH ($SSH_PORT) and panel ($PANEL_PORT) allowed from $ip."
 done
-
-# ICMP
-ufw allow proto icmp > /dev/null
 
 ufw --force enable > /dev/null
 echo "UFW enabled."
@@ -346,13 +352,12 @@ echo "Panel credentials are in Terraform output: terraform output panel_credenti
 echo "Watchtower updates the labeled 3xui container daily (86400s); review releases for breaking changes."
 
 # =============================================================================
-#  9. Restart SSH
+#  9. SSH (already on $SSH_PORT since step 3; restart once more after heavy I/O)
 # =============================================================================
 echo ""
-echo "── [9/9] Restarting SSH on port $SSH_PORT ──────────────────────"
-# Debian/Ubuntu use the ssh.service unit (sshd is often only an alias).
+echo "── [9/9] SSH service check ─────────────────────────────────────"
 systemctl restart ssh
-echo "SSH restarted."
+echo "SSH active on port $SSH_PORT."
 
 # =============================================================================
 #  Done

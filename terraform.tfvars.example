@@ -52,3 +52,5 @@ vless_port = 443
 ssh_public_key = "ssh-ed25519 AAAAC3Nza... your-key-here"
 
 admin_username = "sysadmin"
+# Optional: serial/OCI console login (same user). SSH still uses keys only. 8+ chars, no ':'.
+# admin_password = "your-secure-password-here"

@@ -374,15 +374,16 @@ resource "oci_core_instance" "proxy" {
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
     user_data = base64encode(templatefile("${path.module}/cloud-init.sh.tpl", {
-      admin_username    = var.admin_username
-      ssh_public_key    = var.ssh_public_key
-      ssh_port          = var.ssh_port
-      panel_port        = var.panel_port
-      panel_username    = local.panel_username
-      panel_password    = local.panel_password
-      vless_port        = var.vless_port
-      home_ips_space    = join(" ", var.home_ips)
-      fail2ban_ignoreip = local.fail2ban_ignoreip
+      admin_username     = var.admin_username
+      admin_password_b64 = var.admin_password != null && length(trimspace(var.admin_password)) > 0 ? base64encode(var.admin_password) : ""
+      ssh_public_key     = var.ssh_public_key
+      ssh_port           = var.ssh_port
+      panel_port         = var.panel_port
+      panel_username     = local.panel_username
+      panel_password     = local.panel_password
+      vless_port         = var.vless_port
+      home_ips_space     = join(" ", var.home_ips)
+      fail2ban_ignoreip  = local.fail2ban_ignoreip
     }))
   }
 

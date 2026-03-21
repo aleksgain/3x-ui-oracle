@@ -214,6 +214,26 @@ variable "admin_username" {
   }
 }
 
+variable "admin_password" {
+  description = "Optional password for admin_username (serial/console and local login). SSH stays key-only. Omit to leave no password. Stored in state — use a remote backend for shared stacks. Must not contain ':'."
+  type        = string
+  default     = null
+  sensitive   = true
+  nullable    = true
+
+  validation {
+    condition = (
+      var.admin_password == null
+      || (
+        length(var.admin_password) >= 8
+        && length(var.admin_password) <= 256
+        && !strcontains(var.admin_password, ":")
+      )
+    )
+    error_message = "admin_password must be null, or 8–256 characters without ':'."
+  }
+}
+
 # ── Panel Credentials ─────────────────────────────────────────────────────────
 
 variable "panel_username" {

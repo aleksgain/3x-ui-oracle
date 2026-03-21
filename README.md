@@ -223,6 +223,7 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 
 ## Security notes
 
+- **`admin_password`** (optional): if set in `terraform.tfvars`, cloud-init sets a password for **`admin_username`** so you can log in on the **OCI serial console** or a local tty. **SSH remains public-key only** (`PasswordAuthentication` stays off). The value is **sensitive** and ends up in **Terraform state** — use a **remote backend** if the state is shared. Changing it updates `user_data`; expect Terraform to **replace** the instance so cloud-init runs again.
 - `terraform.tfvars` is gitignored — never commit it
 - Terraform state (`*.tfstate`) is gitignored — use a **remote backend** for any shared or CI workflow
 - Panel credentials are auto-generated and stored in Terraform state (marked sensitive). Override with `panel_username`/`panel_password` in tfvars if needed
