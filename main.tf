@@ -7,7 +7,8 @@ terraform {
   required_providers {
     oci = {
       source  = "oracle/oci"
-      version = "~> 6.0"
+      # https://registry.terraform.io/providers/oracle/oci/latest
+      version = ">= 8.5.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -56,6 +57,24 @@ provider "oci" {
   private_key_path = local.oci_private_key_path_resolved
 }
 
+# ── Availability Domain (auto-discovered to avoid stale prefixes) ────────────
+# OCI periodically rotates the hash prefix of AD names (e.g. Uocm: → yzZM:).
+# A hardcoded name silently goes stale and causes 400-CannotParseRequest on
+# LaunchInstance. The data source always returns the current name.
+
+data "oci_identity_availability_domains" "ads" {
+  compartment_id = var.tenancy_ocid
+}
+
+locals {
+  # If user provides an explicit AD name, use it. Otherwise pick by 1-based index.
+  resolved_availability_domain = (
+    var.availability_domain != null
+    ? var.availability_domain
+    : data.oci_identity_availability_domains.ads.availability_domains[var.availability_domain_number - 1].name
+  )
+}
+
 # ── OS image (latest platform image per region for the chosen OS) ─────────────
 
 locals {
@@ -69,10 +88,17 @@ locals {
       operating_system_version = "22.04"
     }
   }
+
+  # Manual OCID skips ListImages (count=0). Avoid coalesce(null,"") — coalesce drops empty strings and can error.
+  _host_image_ocid_trimmed = try(trimspace(var.host_image_ocid), "")
+  _host_image_override       = length(local._host_image_ocid_trimmed) > 0 ? local._host_image_ocid_trimmed : null
 }
 
-data "oci_core_images" "host" {
-  compartment_id           = var.compartment_id
+# Platform images: list at tenancy_ocid (not resource compartment_id). Try shape-filtered list first, then same OS without shape (some regions return [] only when shape is set).
+data "oci_core_images" "host_shaped" {
+  count = local._host_image_override == null ? 1 : 0
+
+  compartment_id           = var.tenancy_ocid
   operating_system         = local.host_os_image_filter[var.host_os].operating_system
   operating_system_version = local.host_os_image_filter[var.host_os].operating_system_version
   shape                    = var.instance_shape
@@ -82,7 +108,39 @@ data "oci_core_images" "host" {
 }
 
 locals {
-  host_image_id = data.oci_core_images.host.images[0].id
+  _ids_from_shaped = length(data.oci_core_images.host_shaped) == 0 ? [] : flatten([for ds in data.oci_core_images.host_shaped : [for im in ds.images : im.id]])
+}
+
+data "oci_core_images" "host_loose" {
+  count = local._host_image_override == null && length(local._ids_from_shaped) == 0 ? 1 : 0
+
+  compartment_id           = var.tenancy_ocid
+  operating_system         = local.host_os_image_filter[var.host_os].operating_system
+  operating_system_version = local.host_os_image_filter[var.host_os].operating_system_version
+  sort_by                  = "TIMECREATED"
+  sort_order               = "DESC"
+  state                    = "AVAILABLE"
+}
+
+locals {
+  _ids_from_loose = length(data.oci_core_images.host_loose) == 0 ? [] : flatten([for ds in data.oci_core_images.host_loose : [for im in ds.images : im.id]])
+  _auto_image_ids = length(local._ids_from_shaped) > 0 ? local._ids_from_shaped : local._ids_from_loose
+  _image_id_candidates = concat(
+    local._host_image_override != null ? [local._host_image_override] : [],
+    local._auto_image_ids
+  )
+}
+
+check "host_platform_image_found" {
+  assert {
+    condition     = length(local._image_id_candidates) > 0
+    error_message = "No platform image for host_os=${var.host_os}, shape=${var.instance_shape}, region=${var.region}. In Console → Compute → Images (OS images), confirm OS/version strings. Set host_image_ocid to a listed OCID, or try host_os = \"debian-12\" if your region publishes Debian."
+  }
+}
+
+locals {
+  # Avoid Invalid index when candidates is empty (check block still fails plan with message above).
+  host_image_id = try(local._image_id_candidates[0], null)
 
   # Build /32 CIDR list from home IPs for Security List rules
   home_ip_cidrs = [for ip in var.home_ips : "${ip}/32"]
@@ -96,14 +154,11 @@ locals {
   oci_private_key_path_resolved = local.oci_use_inline_key ? null : pathexpand(var.private_key_path)
 
   # Parallel / ephemeral stacks: unique display names; VCN dns_label must be <=15 alphanumeric (OCI).
-  deployment_slug = var.deployment_id != "" ? regexreplace(lower(var.deployment_id), "[^a-z0-9]", "") : ""
-  stack_prefix = var.deployment_id != "" ? "${var.instance_hostname}-${var.deployment_id}" : var.instance_hostname
+  # Uses replace() only (no regexreplace) for compatibility with older Terraform builds.
+  deployment_slug_alnum = var.deployment_id != "" ? replace(replace(lower(var.deployment_id), "-", ""), "_", "") : ""
+  stack_prefix          = var.deployment_id != "" ? "${var.instance_hostname}-${var.deployment_id}" : var.instance_hostname
   vcn_dns_label = substr(
-    regexreplace(
-      lower("${var.instance_hostname}${local.deployment_slug}"),
-      "[^a-z0-9]",
-      ""
-    ),
+    replace(lower("${var.instance_hostname}${local.deployment_slug_alnum}"), "-", ""),
     0,
     15
   )
@@ -116,7 +171,7 @@ resource "oci_core_vcn" "main" {
   cidr_block     = var.vcn_cidr
   display_name   = "${local.stack_prefix}-vcn"
   dns_label      = local.vcn_dns_label
-  is_ipv6enabled = true
+  is_ipv6enabled = var.enable_ipv6
 }
 
 resource "oci_core_internet_gateway" "main" {
@@ -136,9 +191,12 @@ resource "oci_core_route_table" "main" {
     network_entity_id = oci_core_internet_gateway.main.id
   }
 
-  route_rules {
-    destination       = "::/0"
-    network_entity_id = oci_core_internet_gateway.main.id
+  dynamic "route_rules" {
+    for_each = var.enable_ipv6 ? [1] : []
+    content {
+      destination       = "::/0"
+      network_entity_id = oci_core_internet_gateway.main.id
+    }
   }
 }
 
@@ -149,20 +207,21 @@ resource "oci_core_security_list" "main" {
   vcn_id         = oci_core_vcn.main.id
   display_name   = "${local.stack_prefix}-sl"
 
-  # Allow all outbound (IPv4 + IPv6)
   egress_security_rules {
     destination = "0.0.0.0/0"
     protocol    = "all"
     description = "Allow all outbound traffic (IPv4)"
   }
 
-  egress_security_rules {
-    destination = "::/0"
-    protocol    = "all"
-    description = "Allow all outbound traffic (IPv6)"
+  dynamic "egress_security_rules" {
+    for_each = var.enable_ipv6 ? [1] : []
+    content {
+      destination = "::/0"
+      protocol    = "all"
+      description = "Allow all outbound traffic (IPv6)"
+    }
   }
 
-  # VLESS proxy — open to the world (clients in Russia connect here)
   ingress_security_rules {
     protocol    = "6" # TCP
     source      = "0.0.0.0/0"
@@ -173,13 +232,16 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  ingress_security_rules {
-    protocol    = "6" # TCP
-    source      = "::/0"
-    description = "VLESS/Reality proxy (IPv6)"
-    tcp_options {
-      min = var.vless_port
-      max = var.vless_port
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_ipv6 ? [1] : []
+    content {
+      protocol    = "6" # TCP
+      source      = "::/0"
+      description = "VLESS/Reality proxy (IPv6)"
+      tcp_options {
+        min = var.vless_port
+        max = var.vless_port
+      }
     }
   }
 
@@ -225,18 +287,38 @@ resource "oci_core_security_list" "main" {
   }
 }
 
-resource "oci_core_subnet" "main" {
-  compartment_id    = var.compartment_id
-  vcn_id            = oci_core_vcn.main.id
-  cidr_block        = var.subnet_cidr
-  display_name      = "${local.stack_prefix}-subnet"
-  dns_label         = "pub"
-  route_table_id    = oci_core_route_table.main.id
-  security_list_ids = [oci_core_security_list.main.id]
+# OCI rejects in-place removal of a subnet IPv6 prefix (RemoveIpv6SubnetCidr). A single subnet resource
+# cannot go from dual-stack to IPv4-only via update. Use two mutually exclusive subnets (count) so
+# toggling enable_ipv6 destroys one and creates the other — no RemoveIpv6SubnetCidr call.
+resource "oci_core_subnet" "public_ipv4_only" {
+  count = var.enable_ipv6 ? 0 : 1
 
-  # Public subnet — instances get public IPs (IPv4 + IPv6)
+  compartment_id             = var.compartment_id
+  vcn_id                     = oci_core_vcn.main.id
+  cidr_block                 = var.subnet_cidr
+  display_name               = "${local.stack_prefix}-subnet-v4"
+  dns_label                  = "pub"
+  route_table_id             = oci_core_route_table.main.id
+  security_list_ids          = [oci_core_security_list.main.id]
+  prohibit_public_ip_on_vnic = false
+}
+
+resource "oci_core_subnet" "public_dual_stack" {
+  count = var.enable_ipv6 ? 1 : 0
+
+  compartment_id             = var.compartment_id
+  vcn_id                     = oci_core_vcn.main.id
+  cidr_block                 = var.subnet_cidr
+  display_name               = "${local.stack_prefix}-subnet-dual"
+  dns_label                  = "pub"
+  route_table_id             = oci_core_route_table.main.id
+  security_list_ids          = [oci_core_security_list.main.id]
   prohibit_public_ip_on_vnic = false
   ipv6cidr_blocks            = [cidrsubnet(oci_core_vcn.main.ipv6cidr_blocks[0], 8, 0)]
+}
+
+locals {
+  primary_subnet_id = var.enable_ipv6 ? oci_core_subnet.public_dual_stack[0].id : oci_core_subnet.public_ipv4_only[0].id
 }
 
 # ── Cloud-Init (bootstraps the instance on first boot) ───────────────────────
@@ -245,9 +327,18 @@ resource "oci_core_subnet" "main" {
 
 resource "oci_core_instance" "proxy" {
   compartment_id      = var.compartment_id
-  availability_domain = var.availability_domain
+  availability_domain = local.resolved_availability_domain
   shape               = var.instance_shape
   display_name        = local.stack_prefix
+
+  # Flex shapes (e.g. VM.Standard.A1.Flex) require explicit OCPU/RAM; fixed shapes ignore this block.
+  dynamic "shape_config" {
+    for_each = var.instance_flex_ocpus != null ? [1] : []
+    content {
+      ocpus         = var.instance_flex_ocpus
+      memory_in_gbs = var.instance_flex_memory_gb
+    }
+  }
 
   source_details {
     source_type = "image"
@@ -257,15 +348,10 @@ resource "oci_core_instance" "proxy" {
   }
 
   create_vnic_details {
-    subnet_id        = oci_core_subnet.main.id
-    hostname_label   = substr(regexreplace(lower(local.stack_prefix), "[^a-z0-9-]", "-"), 0, 63)
+    subnet_id        = local.primary_subnet_id
+    hostname_label   = substr(replace(lower(local.stack_prefix), "_", "-"), 0, 63)
     assign_public_ip = true
     display_name     = "${local.stack_prefix}-vnic"
-
-    # Assign an IPv6 address from the subnet's Oracle-allocated /64
-    ipv6address_ipv6subnet_cidr_pair_details {
-      ipv6subnet_cidr = oci_core_subnet.main.ipv6cidr_blocks[0]
-    }
   }
 
   metadata = {
@@ -287,6 +373,10 @@ resource "oci_core_instance" "proxy" {
 
   # Preserve the instance if Terraform is re-applied (avoid accidental destroy)
   lifecycle {
+    precondition {
+      condition     = local.host_image_id != null && local.host_image_id != ""
+      error_message = "host_image_id is unset: fix OS image lookup (see check host_platform_image_found) or set host_image_ocid in tfvars."
+    }
     ignore_changes = [
       # Image OCIDs change with OS updates — don't force replacement
       source_details,
@@ -295,13 +385,17 @@ resource "oci_core_instance" "proxy" {
   }
 }
 
-# ── IPv6 Address Lookup ──────────────────────────────────────────────────────
+# ── IPv6 Address Lookup (only when dual-stack is enabled) ───────────────────
 
 data "oci_core_vnic_attachments" "proxy" {
+  count = var.enable_ipv6 ? 1 : 0
+
   compartment_id = var.compartment_id
   instance_id    = oci_core_instance.proxy.id
 }
 
 data "oci_core_ipv6s" "proxy" {
-  vnic_id = data.oci_core_vnic_attachments.proxy.vnic_attachments[0].vnic_id
+  count = var.enable_ipv6 ? 1 : 0
+
+  vnic_id = data.oci_core_vnic_attachments.proxy[0].vnic_attachments[0].vnic_id
 }

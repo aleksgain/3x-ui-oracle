@@ -27,21 +27,34 @@ region = "eu-frankfurt-1"
 compartment_id = "ocid1.tenancy.oc1..aaaa..."
 
 # ── Instance ─────────────────────────────────────────────────────────────────
-# Find your availability domain in:
-# OCI Console → Compute → Instances → Create Instance → Placement
-# Free tier shapes are not always in every AD — check which one has capacity.
-availability_domain = "Uocm:EU-FRANKFURT-1-AD-1"
+# Availability domain is auto-discovered (avoids stale AD name prefixes).
+# Most regions have 1 AD. If you get "Out of host capacity", try a different number.
+# availability_domain_number = 1
 
-# Shape — VM.Standard.E2.1.Micro is always-free eligible (1 OCPU, 1GB RAM)
+# To override auto-discovery with an explicit AD name (advanced):
+# availability_domain = "Uocm:EU-FRANKFURT-1-AD-1"
+
+# Shape — VM.Standard.E2.1.Micro is always-free eligible (1 OCPU, 1GB RAM, x86)
 instance_shape    = "VM.Standard.E2.1.Micro"
 instance_hostname = "proxy"
 
-# OS: debian-12 (default) or ubuntu-22.04 — same bootstrap; marginal RAM difference vs Docker + Xray.
-# host_os = "ubuntu-22.04"
+# ARM free-tier alternative: VM.Standard.A1.Flex (4 OCPU, 24GB RAM total across instances).
+# instance_shape          = "VM.Standard.A1.Flex"
+# instance_flex_ocpus     = 1
+# instance_flex_memory_gb = 6
+
+# OS: ubuntu-22.04 (default on OCI) or debian-12 if available in your region — same bootstrap.
+# host_os = "debian-12"
+
+# If terraform reports no platform image, copy an image OCID from Console → Compute → Images (OS images).
+# host_image_ocid = "ocid1.image.oc1..."
 
 # ── Networking ────────────────────────────────────────────────────────────────
 vcn_cidr    = "10.0.0.0/16"
 subnet_cidr = "10.0.1.0/24"
+
+# Dual-stack VCN + VNIC IPv6 + IPv6 VLESS rule (default false — recommended unless you need IPv6 clients).
+# enable_ipv6 = true
 
 # ── Access Control ────────────────────────────────────────────────────────────
 # Your home/office public IPs — SSH and the panel will be locked to these.

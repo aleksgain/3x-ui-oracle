@@ -45,25 +45,70 @@ variable "compartment_id" {
 # ── Instance ─────────────────────────────────────────────────────────────────
 
 variable "availability_domain" {
-  description = "Availability domain name, e.g. 'Uocm:EU-FRANKFURT-1-AD-1'. Check the console for which AD supports free-tier shapes in your region."
+  description = "Explicit AD name override. Leave null (default) to auto-discover via availability_domain_number. OCI rotates AD name prefixes without notice — auto-discovery avoids stale names causing 400-CannotParseRequest."
   type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.availability_domain == null
+      || (
+        length(trimspace(var.availability_domain)) > 0
+        && !can(regex("^ocid1\\.", trimspace(var.availability_domain)))
+      )
+    )
+    error_message = "availability_domain must be null (auto-discover) or a non-empty AD name — not an OCID."
+  }
+}
+
+variable "availability_domain_number" {
+  description = "1-based index of the availability domain to use (1, 2, or 3). Most regions have 1 AD; some have 3. Free-tier capacity is not always in every AD — try a different number if you get 'Out of host capacity'. Ignored when availability_domain is set explicitly."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.availability_domain_number >= 1 && var.availability_domain_number <= 3
+    error_message = "Must be 1, 2, or 3."
+  }
 }
 
 variable "instance_shape" {
-  description = "Compute shape. VM.Standard.E2.1.Micro is always-free eligible."
+  description = "Compute shape. VM.Standard.E2.1.Micro is always-free eligible (x86). VM.Standard.A1.Flex is always-free eligible (ARM) — set instance_flex_ocpus and instance_flex_memory_gb when using flex shapes."
   type        = string
   default     = "VM.Standard.E2.1.Micro"
 }
 
+variable "instance_flex_ocpus" {
+  description = "Number of OCPUs for flex shapes (e.g. VM.Standard.A1.Flex). Leave null for fixed shapes like VM.Standard.E2.1.Micro."
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "instance_flex_memory_gb" {
+  description = "Memory in GB for flex shapes. Leave null for fixed shapes. ARM free tier allows up to 24 GB across all A1 instances."
+  type        = number
+  default     = null
+  nullable    = true
+}
+
 variable "host_os" {
-  description = "Platform image for the instance. Debian and Ubuntu use the same bootstrap (apt); pick Ubuntu if you prefer Canonical images on OCI. RAM use is similar — the panel and Xray dominate memory, not the base OS."
+  description = "Platform image for the instance. Default is Ubuntu 22.04 (widely available on OCI); Debian 12 is optional where Oracle publishes it. Same apt-based bootstrap either way."
   type        = string
-  default     = "debian-12"
+  default     = "ubuntu-22.04"
 
   validation {
     condition     = contains(["debian-12", "ubuntu-22.04"], var.host_os)
     error_message = "host_os must be debian-12 or ubuntu-22.04."
   }
+}
+
+variable "host_image_ocid" {
+  description = "Optional platform image OCID. When set, skips automatic image lookup (use if ListImages is empty, wrong arch, or you need a specific build)."
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "instance_hostname" {
@@ -77,9 +122,14 @@ variable "instance_hostname" {
 }
 
 variable "deployment_id" {
-  description = "Optional suffix for parallel or ephemeral runs (e.g. github run id). Keeps VCN DNS labels and display names unique in the same tenancy."
+  description = "Optional suffix for parallel or ephemeral runs (e.g. github run id). Keeps VCN DNS labels and display names unique in the same tenancy. Use only letters, digits, hyphens, underscores (no spaces)."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.deployment_id == "" || can(regex("^[a-zA-Z0-9_-]{1,40}$", var.deployment_id))
+    error_message = "deployment_id must be empty or 1–40 chars: letters, digits, hyphens, underscores only."
+  }
 }
 
 # ── Networking ────────────────────────────────────────────────────────────────
@@ -94,6 +144,12 @@ variable "subnet_cidr" {
   description = "CIDR block for the public subnet."
   type        = string
   default     = "10.0.1.0/24"
+}
+
+variable "enable_ipv6" {
+  description = "Dual-stack VCN (Oracle-assigned IPv6), ::/0 routes, IPv6 security rules, subnet IPv6 prefix, and primary VNIC IPv6. Default false avoids LaunchInstance issues in some regions. Toggling this replaces the subnet (OCI cannot remove a subnet IPv6 prefix in place)."
+  type        = bool
+  default     = false
 }
 
 # ── Access Control ────────────────────────────────────────────────────────────
@@ -132,10 +188,6 @@ variable "panel_port" {
   validation {
     condition     = var.panel_port != var.ssh_port
     error_message = "Panel port must differ from SSH port."
-  }
-  validation {
-    condition     = var.panel_port != var.vless_port
-    error_message = "Panel port must differ from VLESS port."
   }
 }
 

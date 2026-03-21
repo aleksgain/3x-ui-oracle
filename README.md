@@ -1,16 +1,15 @@
 # Oracle VPS — 3X-UI VLESS/Reality Proxy
 
-Terraform configuration to provision a hardened **Debian 12** or **Ubuntu 22.04**
+Terraform configuration to provision a hardened **Ubuntu 22.04 LTS** (default) or **Debian 12**
 instance on Oracle Cloud Free Tier, with 3X-UI installed via cloud-init on first boot.
 
 ## What this provisions
 
-- **Dual-stack VCN** (IPv4 + IPv6) + subnet + internet gateway + route table
+- **VCN** + subnet + internet gateway + route table — **IPv4 by default**; set **`enable_ipv6 = true`** for dual-stack (VCN IPv6, `::/0` routes, IPv6 VLESS rule, VNIC IPv6)
 - **Security List** (Oracle-layer firewall):
-  - Port 443/TCP open to the world on IPv4 and IPv6 (VLESS proxy)
-  - SSH port restricted to your home IPs only (IPv4)
-  - Panel port restricted to your home IPs only (IPv4)
-- **Debian 12 or Ubuntu 22.04** instance (VM.Standard.E2.1.Micro — always free; set `host_os`)
+  - VLESS port open to the world on IPv4; when `enable_ipv6`, also on `::/0`
+  - SSH and panel restricted to your home IPs (IPv4)
+- **Ubuntu 22.04** (default) or **Debian 12** instance (VM.Standard.E2.1.Micro — always free; set `host_os`)
 - **Auto-generated panel credentials** (random username + password, retrievable via `terraform output`)
 - **cloud-init bootstrap** that automatically:
   - Updates the system
@@ -32,7 +31,7 @@ instance on Oracle Cloud Free Tier, with 3X-UI installed via cloud-init on first
 3. Terraform **>= 1.5.0** installed locally
 4. An SSH key pair (e.g. `ssh-keygen -t ed25519`)
 
-After the first successful `terraform init`, **commit `.terraform.lock.hcl`** so CI and other machines resolve the same provider versions.
+This repo pins the **[Oracle OCI provider](https://registry.terraform.io/providers/oracle/oci/latest)** to **8.5.x** (8.x line). Run **`terraform init -upgrade`** after pulling changes, then **commit `.terraform.lock.hcl`** so CI and teammates use the same provider build.
 
 ## OCI account setup
 
@@ -58,13 +57,12 @@ If you have never used Oracle Cloud before, follow these steps to create an acco
 2. Copy the **OCID** — it looks like `ocid1.user.oc1..aaaa...`
 3. This is your `user_ocid`
 
-### 4. Find your region and availability domain
+### 4. Find your region
 
 1. Your region is shown in the top bar of the console (e.g. `Germany Central (Frankfurt)`)
 2. The region identifier is in the format `eu-frankfurt-1` — see the [full region list](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm)
-3. To find the availability domain: go to **Compute → Instances → Create Instance**
-4. Under **Placement**, note the availability domain name (e.g. `Uocm:EU-FRANKFURT-1-AD-1`)
-5. Not all ADs have free-tier capacity — if instance creation fails, try a different AD or region
+
+> **Availability domain** is auto-discovered — you do **not** need to look it up. OCI periodically rotates AD name prefixes; the module queries the current name at apply time via `oci_identity_availability_domains`. If your region has multiple ADs and you get "Out of host capacity", set `availability_domain_number = 2` (or 3) in tfvars.
 
 ## OCI API key setup
 
@@ -104,7 +102,6 @@ You now have everything needed to fill in `terraform.tfvars`:
 | `private_key_path` | Path to `~/.oci/oci_api_key.pem` |
 | `region` | Top bar of console (e.g. `eu-frankfurt-1`) |
 | `compartment_id` | Same as `tenancy_ocid` for free tier |
-| `availability_domain` | Compute → Create Instance → Placement |
 
 ## Usage
 
@@ -187,13 +184,15 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 
 ## Which Linux OS?
 
-**Debian 12** is the default: small, stable, and matches what most 3X-UI docs assume for generic “Debian/Ubuntu” steps.
+**Ubuntu 22.04 LTS** is the **default**: Canonical images are available in essentially all OCI regions, and the bootstrap is the same `apt`-based flow as Debian.
 
-**Ubuntu 22.04 LTS** is available via `host_os = "ubuntu-22.04"` — same `apt`-based bootstrap and tuning. On a 1 GB VM, **switching distro does not free meaningful RAM**; almost all memory goes to **Docker, the panel, and Xray**. Choose Ubuntu if you prefer Canonical’s OCI images or tooling.
+**Debian 12** is available via `host_os = "debian-12"` only where Oracle publishes it (some regions have no Debian platform images). On a 1 GB VM, **switching distro does not free meaningful RAM**; almost all memory goes to **Docker, the panel, and Xray**.
 
 **Oracle Linux** or **RHEL-family** would mean a different bootstrap (`dnf`, `firewalld`, …) and is not worth the maintenance unless you standardize on Oracle Linux for compliance.
 
 **Minimal / “Container-optimized” images** rarely help here: you still need a normal userland for SSH, UFW, Fail2ban, and `docker compose`, and OCI’s minimal images can omit pieces cloud-init expects.
+
+**Empty image list / validate errors:** Platform images are queried with **`tenancy_ocid`** (listing under a child `compartment_id` often returns nothing). The module tries shape-filtered listing, then the same OS without shape. If you still get no match, set **`host_image_ocid`** from **Compute → Images → OS images** (pick the build that matches your shape, e.g. x86_64 for `VM.Standard.E2.1.Micro`). If Debian is unavailable in your region, keep the default **`host_os = "ubuntu-22.04"`**.
 
 ## Free tier VM (1 OCPU / ~1 GB RAM)
 
@@ -209,6 +208,12 @@ The default shape (`VM.Standard.E2.1.Micro`) is tight for Docker + Xray + a pane
 
 **Optional later:** if you need more headroom, move to a paid shape, add a **dedicated disk swapfile** (slower than zram but larger), lengthen the Watchtower interval, or turn Watchtower off and pull images manually.
 
+## Troubleshooting
+
+- **`400-CannotParseRequest` on LaunchInstance** — The most common cause is a **stale availability domain name**. OCI periodically rotates the hash prefix of AD names (e.g. `Uocm:` → `yzZM:`) without notice. This module **auto-discovers** the current AD name via the `oci_identity_availability_domains` data source, so you should never hit this unless you set `availability_domain` explicitly in tfvars with an outdated value. If you did override it, remove the override and let auto-discovery handle it. Other causes: `compartment_id` set to a subnet/VNIC OCID instead of a compartment or tenancy OCID. For the raw API body, run apply with `TF_LOG=DEBUG` (see [OCI provider debugging](https://registry.terraform.io/providers/oracle/oci/latest/docs/guides/troubleshooting)).
+
+- **`Out of host capacity`** — Free-tier shapes are scarce. Try a different `availability_domain_number` (1, 2, or 3), a different region, or retry later. Oracle restocks capacity periodically.
+
 ## Security notes
 
 - `terraform.tfvars` is gitignored — never commit it
@@ -217,4 +222,4 @@ The default shape (`VM.Standard.E2.1.Micro`) is tight for Docker + Xray + a pane
 - The Security List + UFW provide two independent firewall layers
 - Fail2ban adds brute-force protection as a third layer
 - SSH password auth is disabled; key-only access only
-- IPv6 is enabled for VLESS traffic; SSH and panel access remain IPv4-only (restricted to `home_ips`)
+- **`enable_ipv6`** (default `false`): turn on only if you want dual-stack VLESS and public IPv6 on the instance; SSH/panel stay IPv4-only to `home_ips`. **`CannotParseRequest` on LaunchInstance is usually a bad `availability_domain` (see Troubleshooting), not IPv6.** **OCI does not allow stripping an IPv6 prefix from an existing subnet** (`Remove IPv6 CIDR not allowed`). The module uses **two mutually exclusive subnets** (`public_ipv4_only` vs `public_dual_stack`) so Terraform **destroys one and creates the other** when you toggle `enable_ipv6` — never an in-place IPv6 strip. Toggling usually **replaces the compute instance** (new subnet OCID). Review `terraform plan` before apply. If your state still has **`oci_core_subnet.main`** (older layout), the next apply will **destroy** that resource and **create** the new subnet address; expect a one-time replace — or run `terraform state rm oci_core_subnet.main` only if you intend to manage the old subnet outside Terraform (advanced).

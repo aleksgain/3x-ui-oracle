@@ -2,9 +2,24 @@
 #  outputs.tf — Oracle VPS / 3X-UI Proxy
 # =============================================================================
 
+locals {
+  # Safe when data.oci_core_ipv6s.proxy has count 0 (enable_ipv6 = false): no [0] indexing on empty data.
+  _ipv6_public_ips = flatten([for ds in data.oci_core_ipv6s.proxy : [for im in ds.ipv6s : im.ip_address]])
+}
+
 output "stack_prefix" {
   description = "Display name prefix for this stack (includes deployment_id when set)."
   value       = local.stack_prefix
+}
+
+output "availability_domain" {
+  description = "Resolved availability domain name (auto-discovered or explicit override)."
+  value       = local.resolved_availability_domain
+}
+
+output "resolved_image_id" {
+  description = "Platform image OCID selected for the instance (debug: confirm it matches your region + shape in Console → Compute → Images)."
+  value       = local.host_image_id
 }
 
 output "instance_public_ip" {
@@ -13,8 +28,12 @@ output "instance_public_ip" {
 }
 
 output "instance_public_ipv6" {
-  description = "Public IPv6 address of the proxy instance."
-  value       = try(data.oci_core_ipv6s.proxy.ipv6s[0].ip_address, "not assigned")
+  description = "Public IPv6 when assigned and enable_ipv6 is true; n/a when dual-stack is off."
+  value = (
+    length(local._ipv6_public_ips) > 0 ? local._ipv6_public_ips[0] : (
+      var.enable_ipv6 ? "not assigned yet" : "n/a (enable_ipv6 = false)"
+    )
+  )
 }
 
 output "ssh_command" {
@@ -39,7 +58,7 @@ output "panel_credentials" {
 output "oracle_security_list_summary" {
   description = "Summary of what the Oracle Security List allows."
   value = {
-    vless_proxy = "TCP ${var.vless_port} open to 0.0.0.0/0 + ::/0"
+    vless_proxy = var.enable_ipv6 ? "TCP ${var.vless_port} open to 0.0.0.0/0 and ::/0" : "TCP ${var.vless_port} open to 0.0.0.0/0 only (IPv4)"
     ssh         = "TCP ${var.ssh_port} open to: ${join(", ", var.home_ips)}"
     panel       = "TCP ${var.panel_port} open to: ${join(", ", var.home_ips)}"
   }
