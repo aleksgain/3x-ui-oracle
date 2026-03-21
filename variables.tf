@@ -38,14 +38,19 @@ variable "region" {
 }
 
 variable "compartment_id" {
-  description = "OCID of the compartment to deploy into. Use tenancy_ocid for root."
+  description = "Compartment OCID for compute and networking. Personal accounts often use tenancy_ocid (root). Avoid Oracle-managed PSM compartments unless policies allow VCN and instances there."
   type        = string
+
+  validation {
+    condition     = can(regex("^ocid1\\.(tenancy|compartment)\\.", var.compartment_id))
+    error_message = "compartment_id must start with ocid1.tenancy. or ocid1.compartment. (root compartment uses the same OCID as tenancy). It must not be a user/subnet/image OCID."
+  }
 }
 
 # ── Instance ─────────────────────────────────────────────────────────────────
 
 variable "availability_domain" {
-  description = "Explicit AD name override. Leave null (default) to auto-discover via availability_domain_number. OCI rotates AD name prefixes without notice — auto-discovery avoids stale names causing 400-CannotParseRequest."
+  description = "Optional AD name; null uses availability_domain_number (recommended so names stay current)."
   type        = string
   default     = null
   nullable    = true
@@ -63,7 +68,7 @@ variable "availability_domain" {
 }
 
 variable "availability_domain_number" {
-  description = "1-based index of the availability domain to use (1, 2, or 3). Most regions have 1 AD; some have 3. Free-tier capacity is not always in every AD — try a different number if you get 'Out of host capacity'. Ignored when availability_domain is set explicitly."
+  description = "1-based AD index (1–3). Try another value if capacity errors occur. Ignored when availability_domain is set."
   type        = number
   default     = 1
 
@@ -74,20 +79,20 @@ variable "availability_domain_number" {
 }
 
 variable "instance_shape" {
-  description = "Compute shape. VM.Standard.E2.1.Micro is always-free eligible (x86). VM.Standard.A1.Flex is always-free eligible (ARM) — set instance_flex_ocpus and instance_flex_memory_gb when using flex shapes."
+  description = "Compute shape. Default VM.Standard.A1.Flex (ARM, free tier). Use VM.Standard.E2.1.Micro only where that shape exists in the chosen AD."
   type        = string
-  default     = "VM.Standard.E2.1.Micro"
+  default     = "VM.Standard.A1.Flex"
 }
 
 variable "instance_flex_ocpus" {
-  description = "Number of OCPUs for flex shapes (e.g. VM.Standard.A1.Flex). Leave null for fixed shapes like VM.Standard.E2.1.Micro."
+  description = "OCPUs for flex shapes (e.g. VM.Standard.A1.Flex). When null and shape name contains \"Flex\", defaults to 1. Must be null for fixed shapes (e.g. VM.Standard.E2.1.Micro)."
   type        = number
   default     = null
   nullable    = true
 }
 
 variable "instance_flex_memory_gb" {
-  description = "Memory in GB for flex shapes. Leave null for fixed shapes. ARM free tier allows up to 24 GB across all A1 instances."
+  description = "Memory in GB for flex shapes. When null and shape name contains \"Flex\", defaults to 6. Must be null for fixed shapes. ARM free tier allows up to 24 GB across all A1 instances."
   type        = number
   default     = null
   nullable    = true
@@ -147,7 +152,7 @@ variable "subnet_cidr" {
 }
 
 variable "enable_ipv6" {
-  description = "Dual-stack VCN (Oracle-assigned IPv6), ::/0 routes, IPv6 security rules, subnet IPv6 prefix, and primary VNIC IPv6. Default false avoids LaunchInstance issues in some regions. Toggling this replaces the subnet (OCI cannot remove a subnet IPv6 prefix in place)."
+  description = "Enable dual-stack VCN, routes, and VNIC IPv6. Toggling replaces the subnet (OCI cannot strip IPv6 in place)."
   type        = bool
   default     = false
 }

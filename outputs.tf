@@ -3,7 +3,6 @@
 # =============================================================================
 
 locals {
-  # Safe when data.oci_core_ipv6s.proxy has count 0 (enable_ipv6 = false): no [0] indexing on empty data.
   _ipv6_public_ips = flatten([for ds in data.oci_core_ipv6s.proxy : [for im in ds.ipv6s : im.ip_address]])
 }
 
@@ -18,8 +17,8 @@ output "availability_domain" {
 }
 
 output "resolved_image_id" {
-  description = "Platform image OCID selected for the instance (debug: confirm it matches your region + shape in Console → Compute → Images)."
-  value       = local.host_image_id
+  description = "Platform image OCID used for the instance."
+  value       = length(data.oci_core_image.host_boot) > 0 ? data.oci_core_image.host_boot[0].id : local.host_image_id
 }
 
 output "instance_public_ip" {
@@ -92,9 +91,9 @@ output "next_steps" {
        • Security: Reality, SNI: vk.com:443
        • Flow: xtls-rprx-vision
        • Add a client → Generate UUID → Save
-       • Click the QR code icon → send to your parents
+       • Click the QR code icon → send to your end users
 
-    4. Parents install Hiddify (iOS/Android), scan QR → Connect.
+    4. Users install Hiddify (iOS/Android), scan QR → Connect.
 
     ═══════════════════════════════════════════════════════
   EOT

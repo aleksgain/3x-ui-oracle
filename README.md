@@ -9,7 +9,7 @@ instance on Oracle Cloud Free Tier, with 3X-UI installed via cloud-init on first
 - **Security List** (Oracle-layer firewall):
   - VLESS port open to the world on IPv4; when `enable_ipv6`, also on `::/0`
   - SSH and panel restricted to your home IPs (IPv4)
-- **Ubuntu 22.04** (default) or **Debian 12** instance (VM.Standard.E2.1.Micro — always free; set `host_os`)
+- **Ubuntu 22.04** (default) or **Debian 12** instance (`VM.Standard.A1.Flex` by default; use `VM.Standard.E2.1.Micro` where that shape exists in the chosen AD)
 - **Auto-generated panel credentials** (random username + password, retrievable via `terraform output`)
 - **cloud-init bootstrap** that automatically:
   - Updates the system
@@ -103,6 +103,10 @@ You now have everything needed to fill in `terraform.tfvars`:
 | `region` | Top bar of console (e.g. `eu-frankfurt-1`) |
 | `compartment_id` | Same as `tenancy_ocid` for free tier |
 
+## Changing region
+
+Resources are regional: edit `region` alone does not migrate them. Subscribe to the new region in Console if needed, **`terraform destroy`** in the **old** region, then set `region` (and usually `availability_domain_number = 1` in single-AD regions) and **`terraform apply`**. See [OCI regions](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm).
+
 ## Usage
 
 ```bash
@@ -194,9 +198,9 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 
 **Empty image list / validate errors:** Platform images are queried with **`tenancy_ocid`** (listing under a child `compartment_id` often returns nothing). The module tries shape-filtered listing, then the same OS without shape. If you still get no match, set **`host_image_ocid`** from **Compute → Images → OS images** (pick the build that matches your shape, e.g. x86_64 for `VM.Standard.E2.1.Micro`). If Debian is unavailable in your region, keep the default **`host_os = "ubuntu-22.04"`**.
 
-## Free tier VM (1 OCPU / ~1 GB RAM)
+## Small VMs (e.g. E2.1.Micro or minimal A1.Flex)
 
-The default shape (`VM.Standard.E2.1.Micro`) is tight for Docker + Xray + a panel. The bootstrap script is tuned for that:
+1 GB–class shapes are tight for Docker + Xray + a panel. The bootstrap script is tuned for that:
 
 - **zram** (`zram-tools`, ~40% of RAM as compressed swap) to reduce OOM kills without relying on a large on-disk swap file.
 - **Higher `vm.swappiness`** so the kernel is willing to use that compressed “swap” before processes die.
@@ -210,9 +214,12 @@ The default shape (`VM.Standard.E2.1.Micro`) is tight for Docker + Xray + a pane
 
 ## Troubleshooting
 
-- **`400-CannotParseRequest` on LaunchInstance** — The most common cause is a **stale availability domain name**. OCI periodically rotates the hash prefix of AD names (e.g. `Uocm:` → `yzZM:`) without notice. This module **auto-discovers** the current AD name via the `oci_identity_availability_domains` data source, so you should never hit this unless you set `availability_domain` explicitly in tfvars with an outdated value. If you did override it, remove the override and let auto-discovery handle it. Other causes: `compartment_id` set to a subnet/VNIC OCID instead of a compartment or tenancy OCID. For the raw API body, run apply with `TF_LOG=DEBUG` (see [OCI provider debugging](https://registry.terraform.io/providers/oracle/oci/latest/docs/guides/troubleshooting)).
-
-- **`Out of host capacity`** — Free-tier shapes are scarce. Try a different `availability_domain_number` (1, 2, or 3), a different region, or retry later. Oracle restocks capacity periodically.
+| Symptom | Typical fix |
+|--------|-------------|
+| `400-CannotParseRequest` on launch | Prefer auto AD (`availability_domain` unset); if you set it, paste the current name from Console. Ensure `compartment_id` is a compartment/tenancy OCID, not a resource OCID. |
+| Out of capacity / `500` on launch | Try `availability_domain_number` 2 or 3, another time of day, or another region after `destroy` + `apply`. Use `-replace=oci_core_instance.proxy` if state is stuck after a failed create. |
+| `404` on launch | Often **shape not in that AD** — `terraform plan` runs a shape check; use `VM.Standard.A1.Flex` or pick a shape from `oci compute shape list`. Confirm `compartment_id`, `region`, and optional `host_image_ocid`. |
+| `404` on CreateVcn | Use root or a normal compartment (not a restricted PSM compartment); ensure IAM allows `manage virtual-network-family` there. |
 
 ## Security notes
 
@@ -222,4 +229,4 @@ The default shape (`VM.Standard.E2.1.Micro`) is tight for Docker + Xray + a pane
 - The Security List + UFW provide two independent firewall layers
 - Fail2ban adds brute-force protection as a third layer
 - SSH password auth is disabled; key-only access only
-- **`enable_ipv6`** (default `false`): turn on only if you want dual-stack VLESS and public IPv6 on the instance; SSH/panel stay IPv4-only to `home_ips`. **`CannotParseRequest` on LaunchInstance is usually a bad `availability_domain` (see Troubleshooting), not IPv6.** **OCI does not allow stripping an IPv6 prefix from an existing subnet** (`Remove IPv6 CIDR not allowed`). The module uses **two mutually exclusive subnets** (`public_ipv4_only` vs `public_dual_stack`) so Terraform **destroys one and creates the other** when you toggle `enable_ipv6` — never an in-place IPv6 strip. Toggling usually **replaces the compute instance** (new subnet OCID). Review `terraform plan` before apply. If your state still has **`oci_core_subnet.main`** (older layout), the next apply will **destroy** that resource and **create** the new subnet address; expect a one-time replace — or run `terraform state rm oci_core_subnet.main` only if you intend to manage the old subnet outside Terraform (advanced).
+- **`enable_ipv6`**: dual-stack VLESS and public IPv6 when `true`; SSH/panel remain restricted to `home_ips` (IPv4). Toggling replaces the subnet (OCI cannot remove a subnet IPv6 prefix in place) and usually replaces the instance — review `terraform plan`.
