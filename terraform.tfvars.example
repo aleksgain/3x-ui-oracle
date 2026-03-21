@@ -1,0 +1,75 @@
+# =============================================================================
+#  terraform.tfvars.example
+#  Copy this to terraform.tfvars and fill in your values.
+#  NEVER commit terraform.tfvars to git — it contains secrets.
+# =============================================================================
+
+# ── OCI Authentication ────────────────────────────────────────────────────────
+# Find these under: OCI Console → Profile (top right) → User Settings → API Keys
+# And: Profile → Tenancy
+
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaa..."
+user_ocid        = "ocid1.user.oc1..aaaa..."
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+
+# CI / GitHub Actions: pass the PEM via TF_VAR_private_key (repository secret). When set, it overrides private_key_path.
+
+# Optional: unique name per run for parallel or ephemeral stacks (e.g. github.run_id).
+# deployment_id = "12345"
+
+# Your OCI region identifier
+# Examples: eu-frankfurt-1 | us-ashburn-1 | ap-sydney-1 | uk-london-1
+region = "eu-frankfurt-1"
+
+# Compartment to deploy into.
+# For free tier / personal use, this is usually the same as tenancy_ocid.
+compartment_id = "ocid1.tenancy.oc1..aaaa..."
+
+# ── Instance ─────────────────────────────────────────────────────────────────
+# Find your availability domain in:
+# OCI Console → Compute → Instances → Create Instance → Placement
+# Free tier shapes are not always in every AD — check which one has capacity.
+availability_domain = "Uocm:EU-FRANKFURT-1-AD-1"
+
+# Shape — VM.Standard.E2.1.Micro is always-free eligible (1 OCPU, 1GB RAM)
+instance_shape    = "VM.Standard.E2.1.Micro"
+instance_hostname = "proxy"
+
+# OS: debian-12 (default) or ubuntu-22.04 — same bootstrap; marginal RAM difference vs Docker + Xray.
+# host_os = "ubuntu-22.04"
+
+# ── Networking ────────────────────────────────────────────────────────────────
+vcn_cidr    = "10.0.0.0/16"
+subnet_cidr = "10.0.1.0/24"
+
+# ── Access Control ────────────────────────────────────────────────────────────
+# Your home/office public IPs — SSH and the panel will be locked to these.
+# Add one per WAN link (HA internet setup = at least two).
+# Find each IP by visiting https://ifconfig.me from each connection.
+home_ips = [
+  "1.2.3.4",   # WAN link 1
+  "5.6.7.8",   # WAN link 2
+]
+
+# Non-standard SSH port — avoids the vast majority of automated scanners
+ssh_port = 2222
+
+# 3X-UI admin panel port
+panel_port = 54321
+
+# VLESS proxy port — 443 recommended (looks like normal HTTPS)
+vless_port = 443
+
+# ── Panel Credentials ─────────────────────────────────────────────────────────
+# Leave unset to auto-generate random credentials (recommended).
+# Retrieve after apply: terraform output panel_credentials
+# panel_username = "myadmin"
+# panel_password = "my-secret-password"
+
+# ── SSH & User ────────────────────────────────────────────────────────────────
+# Your SSH public key — get it with: cat ~/.ssh/id_ed25519.pub
+ssh_public_key = "ssh-ed25519 AAAAC3Nza... your-key-here"
+
+# Sudo user to create on the instance
+admin_username = "sysadmin"
