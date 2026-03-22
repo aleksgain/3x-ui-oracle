@@ -9,6 +9,7 @@ instance on Oracle Cloud Free Tier, with 3X-UI installed via cloud-init on first
 - **Security List** (Oracle-layer firewall):
   - VLESS port open to the world on IPv4; when `enable_ipv6`, also on `::/0`
   - SSH and panel restricted to your home IPs (IPv4)
+- **Host firewall:** `iptables` via `/etc/iptables/rules.v4` (not UFW). Oracle [documents](https://docs.oracle.com/en-us/iaas/Content/Compute/known-issues.htm#ufw) that UFW on Ubuntu OCI can break boot volume networking and cause misleading **“No route to host”** on TCP while ICMP still works from allowed sources ([discussion](https://superuser.com/questions/1487012/no-route-to-host-when-trying-to-connect-to-a-tcp-service-on-an-oracle-cloud-in)).
 - **Ubuntu 22.04** (default) or **Debian 12** instance (`VM.Standard.A1.Flex` by default; use `VM.Standard.E2.1.Micro` where that shape exists in the chosen AD)
 - **Auto-generated panel credentials** (random username + password, retrievable via `terraform output`)
 - **cloud-init bootstrap** that automatically:
@@ -126,8 +127,8 @@ terraform plan
 # 5. Apply
 terraform apply
 
-# 6. Wait ~3 minutes for cloud-init to complete, then check:
-ssh -p <ssh_port> <admin_username>@<instance_ip> \
+# 6. Wait ~10 minutes for cloud-init to complete, then check:
+ssh -p <ssh_port> -i ~/.ssh/id_ed25519 <admin_username>@<instance_ip> \
   "cat /opt/cloud-init-status"
 # Should print: OK
 ```

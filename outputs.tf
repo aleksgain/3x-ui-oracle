@@ -36,8 +36,8 @@ output "instance_public_ipv6" {
 }
 
 output "ssh_command" {
-  description = "SSH command to connect to the instance."
-  value       = "ssh -p ${var.ssh_port} ${var.admin_username}@${oci_core_instance.proxy.public_ip}"
+  description = "SSH command to connect to the instance. Replace ~/path/to/private_key with the private key matching ssh_public_key in tfvars (e.g. ~/.ssh/id_ed25519)."
+  value       = "ssh -p ${var.ssh_port} -i ~/path/to/private_key ${var.admin_username}@${oci_core_instance.proxy.public_ip}"
 }
 
 output "panel_url" {
@@ -76,9 +76,9 @@ output "next_steps" {
       Setup complete! Next steps:
     ═══════════════════════════════════════════════════════
 
-    1. Wait ~3 minutes for cloud-init to finish provisioning.
-       Monitor progress:
-       ssh -p ${var.ssh_port} ${var.admin_username}@${oci_core_instance.proxy.public_ip} \
+    1. Wait ~10 minutes for cloud-init to finish (Docker pull + packages can be slow).
+       Monitor progress (use -i with your private key if ssh does not pick it automatically):
+       ssh -p ${var.ssh_port} -i ~/path/to/private_key ${var.admin_username}@${oci_core_instance.proxy.public_ip} \
          "sudo tail -f /var/log/cloud-init-output.log"
 
     2. Log into the 3X-UI panel:

@@ -44,7 +44,7 @@ echo "── [1/9] System update ───────────────�
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
 apt-get install -y -qq \
-    curl ufw fail2ban unattended-upgrades sudo zram-tools
+    curl fail2ban unattended-upgrades sudo zram-tools
 echo "System updated."
 
 # Compressed RAM swap — avoids OOM on 1GB free-tier shapes without heavy disk thrash.
@@ -127,33 +127,73 @@ set_ssh_opt "ClientAliveCountMax" "2"
 set_ssh_opt "LoginGraceTime"         "30"
 
 sshd -t || { echo "ERROR: sshd config invalid!"; cp "$${SSHD_CONFIG}.bak" "$SSHD_CONFIG"; exit 1; }
-# Apply new port before UFW: otherwise sshd still listens on 22 while UFW only allows $SSH_PORT → lockout.
+# Apply new port before host firewall: sshd must listen on $SSH_PORT before we tighten INPUT.
 systemctl restart ssh
 echo "SSH configured and listening on port $SSH_PORT."
 
 # =============================================================================
-#  4. UFW firewall
+#  4. Host firewall (iptables — OCI Ubuntu: do not use UFW)
 # =============================================================================
+# Oracle: UFW can strip rules needed for boot/block volumes and break inbound TCP
+# (clients may see "No route to host"). Use /etc/iptables/rules.v4 instead.
+# https://docs.oracle.com/en-us/iaas/Content/Compute/known-issues.htm#ufw
+# https://docs.oracle.com/en-us/iaas/Content/Compute/References/bestpracticescompute.htm#Essentia
 echo ""
-echo "── [4/9] UFW firewall ───────────────────────────────────────────"
+echo "── [4/9] Host firewall (iptables) ───────────────────────────────"
 
-ufw --force reset > /dev/null
-ufw default deny incoming > /dev/null
-ufw default allow outgoing > /dev/null
+systemctl stop ufw 2>/dev/null || true
+systemctl disable ufw 2>/dev/null || true
+DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge ufw 2>/dev/null || true
 
-# VLESS proxy — open to all
-ufw allow "$VLESS_PORT"/tcp comment "VLESS proxy" > /dev/null
-echo "Port $VLESS_PORT/tcp (VLESS) open to all."
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables iptables-persistent
 
-# SSH and panel — each home IP (ping: OCI security list only; UFW here rejects proto icmp via CLI)
+if [[ -f /etc/iptables/rules.v4 ]]; then
+  iptables-restore < /etc/iptables/rules.v4 || true
+fi
+if [[ -f /etc/iptables/rules.v6 ]]; then
+  ip6tables-restore < /etc/iptables/rules.v6 || true
+fi
+
+# Insert each rule immediately before the first REJECT/DROP on INPUT (so it is not below a terminal rule).
+oci_insert_input() {
+  local num
+  # With -n, columns are: num pkts bytes target prot ... — target is $4
+  num=$(iptables -L INPUT --line-numbers -nv 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && ($4 == "REJECT" || $4 == "DROP") { print $1; exit }')
+  if [[ -n "$num" ]] && [[ "$num" =~ ^[0-9]+$ ]]; then
+    iptables -I INPUT "$num" "$@"
+  else
+    iptables -A INPUT "$@"
+  fi
+}
+
+oci_insert_input -p tcp -m tcp --dport "$VLESS_PORT" -j ACCEPT
+echo "Port $VLESS_PORT/tcp (VLESS) allowed (iptables)."
+
 for ip in $HOME_IPS; do
-    ufw allow from "$ip" to any port "$SSH_PORT"  proto tcp comment "SSH from $ip"   > /dev/null
-    ufw allow from "$ip" to any port "$PANEL_PORT" proto tcp comment "Panel from $ip" > /dev/null
-    echo "SSH ($SSH_PORT) and panel ($PANEL_PORT) allowed from $ip."
+  oci_insert_input -p tcp -s "$ip" -m tcp --dport "$SSH_PORT" -j ACCEPT
+  oci_insert_input -p tcp -s "$ip" -m tcp --dport "$PANEL_PORT" -j ACCEPT
+  echo "SSH ($SSH_PORT) and panel ($PANEL_PORT) allowed from $ip (iptables)."
 done
 
-ufw --force enable > /dev/null
-echo "UFW enabled."
+oci_insert_input6() {
+  local num
+  num=$(ip6tables -L INPUT --line-numbers -nv 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && ($4 == "REJECT" || $4 == "DROP") { print $1; exit }')
+  if [[ -n "$num" ]] && [[ "$num" =~ ^[0-9]+$ ]]; then
+    ip6tables -I INPUT "$num" "$@"
+  else
+    ip6tables -A INPUT "$@"
+  fi
+}
+if command -v ip6tables >/dev/null 2>&1; then
+  oci_insert_input6 -p tcp -m tcp --dport "$VLESS_PORT" -j ACCEPT 2>/dev/null || true
+fi
+
+mkdir -p /etc/iptables
+iptables-save  > /etc/iptables/rules.v4
+ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+echo "iptables rules saved to /etc/iptables/rules.v4 (and rules.v6 if applicable)."
 
 # =============================================================================
 #  5. Fail2ban
