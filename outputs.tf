@@ -85,15 +85,11 @@ output "next_steps" {
        http://${oci_core_instance.proxy.public_ip}:${var.panel_port}
        Credentials: terraform output panel_credentials
 
-    3. In the panel:
-       • Go to Inbounds → Add Inbound
-       • Protocol: vless, Port: ${var.vless_port}
-       • Security: Reality, SNI: vk.com:443
-       • Flow: xtls-rprx-vision
-       • Add a client → Generate UUID → Save
-       • Click the QR code icon → send to your end users
+    3. In the panel: Inbounds → Add Inbound — see README "Add Inbound — field reference":
+       VLESS, TCP, port ${var.vless_port}, Security reality, Target/SNI, uTLS, keys + Short IDs,
+       client Flow (e.g. xtls-rprx-vision). Save → QR / subscription link.
 
-    4. Users install Hiddify (iOS/Android), scan QR → Connect.
+    4. Users install a compatible client (e.g. Hiddify), import QR / sub → connect.
 
     ═══════════════════════════════════════════════════════
   EOT

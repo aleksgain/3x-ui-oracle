@@ -16,7 +16,7 @@ instance on Oracle Cloud Free Tier, with 3X-UI installed via cloud-init on first
   - Updates the system
   - Creates a sudo user with your SSH key
   - Hardens SSH (custom port, key-only auth, no root login)
-  - Configures UFW (mirrors the Security List rules as a second layer)
+  - Configures **iptables** on the host (mirrors the Security List intent; OCI discourages UFW on Ubuntu)
   - Configures Fail2ban (SSH brute-force protection)
   - Enables automatic security updates
   - Applies kernel hardening (sysctl — IPv4/IPv6)
@@ -141,18 +141,65 @@ ssh -p <ssh_port> -i ~/.ssh/id_ed25519 <admin_username>@<instance_ip> \
    ```
 2. Open the panel URL printed in outputs: `http://<ip>:<panel_port>`
 3. Sign in with the credentials from step 1
-4. Go to **Inbounds → Add Inbound**:
-   - Protocol: `vless`
-   - Port: `443`
-   - Transmission: `TCP`
-   - Security: `Reality`
-   - SNI / Dest: `vk.com:443`
-   - Server name: `vk.com`
-   - Click **Get New Cert**
-   - Flow: `xtls-rprx-vision`
-5. Add a client → Generate UUID → Save
-6. Click the **QR code icon** → send to recipient
-7. Recipient installs **Hiddify** (iOS/Android), scan QR → Connect
+4. Go to **Inbounds → Add Inbound**. Below is a **field reference** for the current-style form (labels move slightly between releases). Set **Port** to the same value as **`vless_port`** in `terraform.tfvars` (often **443**).
+
+### Add Inbound — field reference (VLESS + Reality)
+
+**General (inbound)**
+
+| Field | Purpose |
+|--------|--------|
+| **Enabled** | Turn the inbound on. |
+| **Remark** | Label in the list only. |
+| **Protocol** | **VLESS**. |
+| **Listen IP** | Usually empty / all interfaces unless you bind to one NIC. |
+| **Port** | Must match **`vless_port`** and OCI + host firewall (e.g. **443**). |
+| **Total Flow** / **Traffic Reset** / **Duration** | Optional traffic accounting / reset rules. |
+
+**Per-client row** (after you add a client under the inbound)
+
+| Field | Purpose |
+|--------|--------|
+| **Email** | Friendly id for the client in the panel. |
+| **ID** | Client UUID (generated). |
+| **Subscription** | Subscription token / path segment for subscription URLs. |
+| **Comment** | Notes. |
+| **Flow** | e.g. **xtls-rprx-vision** for Vision + Reality with supported apps; use **none** if the client requires it. |
+| **Total Flow** / **Start After First Use** / **Duration** | Optional per-client traffic limits. |
+| **Authentication** — **decryption** / **encryption** | Often **none** for standard VLESS + Reality. |
+
+**Transmission**
+
+| Field | Purpose |
+|--------|--------|
+| **Transmission** | **TCP** for typical Reality. |
+| **Proxy Protocol** | Off unless you sit behind a proxy that sends PROXY headers. |
+| **HTTP Obfuscation** | Optional TCP HTTP-header camouflage; fewer clients support it than plain TCP + Reality. |
+| **Sockopt** / **UDP Masks** / **External Proxy** | Advanced; leave default unless you know you need them. |
+| **Fallbacks** | Optional alternate paths; leave empty for a simple setup. |
+
+**Security** (expand **Show** if collapsed)
+
+| Field | Purpose |
+|--------|--------|
+| **Security** | **reality**. |
+| **Xver** | Often **0** unless you use X-Forwarded-For style metadata. |
+| **uTLS** | Browser fingerprint, e.g. **chrome** / **Chrome**. |
+| **Target** | Reality dest, e.g. **`vk.com:443`** — real TLS site on 443. |
+| **SNI** | Server name for Reality, e.g. **`vk.com`** (aligned with **Target**). |
+| **Max Time Diff (ms)** | Clock skew tolerance; **0** is common. |
+| **Min Client Ver** / **Max Client Ver** | Optional Xray client version window. |
+| **Short IDs** | Comma-separated Reality short IDs; use the panel’s generator — at least one must match the client. |
+| **SpiderX** | Often **`/`** (default path-style knob for Reality). |
+| **Public Key** / **Private Key** | Generate in the panel; **never** commit these or paste them into git. |
+| **mldsa65 Seed** / **Verify** | Optional post-quantum / newer Reality options; leave default unless you intentionally use them. |
+
+**Minimal path:** **VLESS** → **TCP** → **Security = reality** → fill **Target** + **SNI** → generate **keys** + **Short IDs** → set **uTLS** → add a client and set **Flow** → **Save** → share **QR** / subscription link.
+
+**IPv6:** With **`enable_ipv6`**, you can put the instance’s public IPv6 in the client URI (typically bracketed), e.g. `vless://uuid@[2001:db8::1]:443?...`.
+
+5. Add a client → **Save** the inbound.
+6. Use the **QR** or subscription link with a client that matches **Reality**, **uTLS**, **flow**, and optional **HTTP Obfuscation** if you enabled it.
 
 Compose files and data live under `/opt/3x-ui` on the instance (`compose.yml`, `db/`, `cert/`). To manage the stack: `sudo docker compose -f /opt/3x-ui/compose.yml …`.
 
@@ -171,7 +218,7 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 - **Non-interactive apply:** `export TF_INPUT=0` and use `terraform apply -auto-approve` (or `-input=false` with a plan file).
 - **OCI API key:** store the PEM in a secret and expose it as **`TF_VAR_private_key`**; leave `private_key_path` unset (or empty) in that environment. The root module accepts either a file path or inline PEM.
 - **SSH key:** set **`TF_VAR_ssh_public_key`** from a deploy key or generated key pair stored in repo secrets.
-- **Runner egress IP:** GitHub-hosted runners use dynamic IPs. Either add the runner’s current egress to `home_ips` for that run, use a self-hosted runner with a fixed IP, or temporarily widen OCI/UFW rules for the job (not recommended for production panels).
+- **Runner egress IP:** GitHub-hosted runners use dynamic IPs. Either add the runner’s current egress to `home_ips` for that run, use a self-hosted runner with a fixed IP, or temporarily widen OCI and host firewall rules for the job (not recommended for production panels).
 - **Parallel jobs:** set **`deployment_id`** (e.g. `${{ github.run_id }}`) so VCN `dns_label` and resource display names stay unique in one tenancy.
 - **State:** default is **local** `terraform.tfstate` (gitignored). For pipelines, configure a **remote backend** (OCI Object Storage, Terraform Cloud, etc.) so `apply` and `destroy` share state.
 
@@ -195,7 +242,7 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 
 **Oracle Linux** or **RHEL-family** would mean a different bootstrap (`dnf`, `firewalld`, …) and is not worth the maintenance unless you standardize on Oracle Linux for compliance.
 
-**Minimal / “Container-optimized” images** rarely help here: you still need a normal userland for SSH, UFW, Fail2ban, and `docker compose`, and OCI’s minimal images can omit pieces cloud-init expects.
+**Minimal / “Container-optimized” images** rarely help here: you still need a normal userland for SSH, host firewall (`iptables`), Fail2ban, and `docker compose`, and OCI’s minimal images can omit pieces cloud-init expects.
 
 **Empty image list / validate errors:** Platform images are queried with **`tenancy_ocid`** (listing under a child `compartment_id` often returns nothing). The module tries shape-filtered listing, then the same OS without shape. If you still get no match, set **`host_image_ocid`** from **Compute → Images → OS images** (pick the build that matches your shape, e.g. x86_64 for `VM.Standard.E2.1.Micro`). If Debian is unavailable in your region, keep the default **`host_os = "ubuntu-22.04"`**.
 
@@ -207,7 +254,7 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 - **Higher `vm.swappiness`** so the kernel is willing to use that compressed “swap” before processes die.
 - **Small journald caps** so logs do not eat the boot volume.
 - **Docker log rotation** (`daemon.json`: 10 MB × 2 files per container) so container stdout does not grow without bound.
-- **No in-container Fail2ban** for 3X-UI — the host already runs Fail2ban for SSH, and the panel is only exposed to your `home_ips` in OCI + UFW. That drops a second Fail2ban stack inside the container and saves memory.
+- **No in-container Fail2ban** for 3X-UI — the host already runs Fail2ban for SSH, and the panel is only exposed to your `home_ips` in OCI and on-host `iptables`. That drops a second Fail2ban stack inside the container and saves memory.
 
 **Not capped:** the 3X-UI service is **not** given a hard Docker memory limit, so Xray can burst under load; on 1 GB you should still keep inbound/client counts modest and watch `free -h` / `docker stats` after changes.
 
@@ -228,7 +275,7 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 - `terraform.tfvars` is gitignored — never commit it
 - Terraform state (`*.tfstate`) is gitignored — use a **remote backend** for any shared or CI workflow
 - Panel credentials are auto-generated and stored in Terraform state (marked sensitive). Override with `panel_username`/`panel_password` in tfvars if needed
-- The Security List + UFW provide two independent firewall layers
+- The OCI Security List and host `iptables` rules provide two independent firewall layers
 - Fail2ban adds brute-force protection as a third layer
 - SSH password auth is disabled; key-only access only
 - **`enable_ipv6`**: dual-stack VLESS and public IPv6 when `true`; SSH/panel remain restricted to `home_ips` (IPv4). Toggling replaces the subnet (OCI cannot remove a subnet IPv6 prefix in place) and usually replaces the instance — review `terraform plan`.
