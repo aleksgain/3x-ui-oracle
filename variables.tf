@@ -38,19 +38,19 @@ variable "region" {
 }
 
 variable "compartment_id" {
-  description = "Compartment OCID for compute and networking. Personal accounts often use tenancy_ocid (root). Avoid Oracle-managed PSM compartments unless policies allow VCN and instances there."
+  description = "Compartment OCID for compute and networking (often tenancy_ocid for root)."
   type        = string
 
   validation {
     condition     = can(regex("^ocid1\\.(tenancy|compartment)\\.", var.compartment_id))
-    error_message = "compartment_id must start with ocid1.tenancy. or ocid1.compartment. (root compartment uses the same OCID as tenancy). It must not be a user/subnet/image OCID."
+    error_message = "compartment_id must be ocid1.tenancy.* or ocid1.compartment.* — not a resource OCID."
   }
 }
 
 # ── Instance ─────────────────────────────────────────────────────────────────
 
 variable "availability_domain" {
-  description = "Optional AD name; null uses availability_domain_number (recommended so names stay current)."
+  description = "Optional AD name; null uses availability_domain_number."
   type        = string
   default     = null
   nullable    = true
@@ -68,7 +68,7 @@ variable "availability_domain" {
 }
 
 variable "availability_domain_number" {
-  description = "1-based AD index (1–3). Try another value if capacity errors occur. Ignored when availability_domain is set."
+  description = "1-based AD index (1–3). Ignored when availability_domain is set."
   type        = number
   default     = 1
 
@@ -79,7 +79,7 @@ variable "availability_domain_number" {
 }
 
 variable "instance_shape" {
-  description = "Compute shape. Default VM.Standard.A1.Flex (ARM, free tier). Use VM.Standard.E2.1.Micro only where that shape exists in the chosen AD."
+  description = "Compute shape (default VM.Standard.A1.Flex)."
   type        = string
   default     = "VM.Standard.A1.Flex"
 }
@@ -152,23 +152,23 @@ variable "subnet_cidr" {
 }
 
 variable "enable_ipv6" {
-  description = "Enable dual-stack VCN, routes, and VNIC IPv6. Toggling replaces the subnet (OCI cannot strip IPv6 in place)."
+  description = "Dual-stack VCN and VNIC IPv6. Toggling replaces the subnet."
   type        = bool
   default     = false
 }
 
-# ── Access Control ────────────────────────────────────────────────────────────
+# ── Management access (SSH + panel) ───────────────────────────────────────────
 
-variable "home_ips" {
-  description = "List of your home/office public IP addresses. SSH and the 3X-UI panel will be restricted to these IPs only."
+variable "management_ips" {
+  description = "Public IPv4 addresses allowed to reach SSH and the 3X-UI panel (admin / management sources only)."
   type        = list(string)
   validation {
-    condition     = length(var.home_ips) > 0
-    error_message = "You must provide at least one home IP address."
+    condition     = length(var.management_ips) > 0
+    error_message = "Provide at least one management IPv4 address."
   }
   validation {
-    condition     = alltrue([for ip in var.home_ips : can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", ip))])
-    error_message = "All home_ips must be valid IPv4 addresses."
+    condition     = alltrue([for ip in var.management_ips : can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", ip))])
+    error_message = "All management_ips entries must be IPv4 addresses."
   }
 }
 

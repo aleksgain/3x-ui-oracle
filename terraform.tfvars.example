@@ -35,9 +35,9 @@ vcn_cidr    = "10.0.0.0/16"
 subnet_cidr = "10.0.1.0/24"
 # enable_ipv6 = true
 
-# ── Access Control ────────────────────────────────────────────────────────────
+# ── Management access (SSH + panel) ───────────────────────────────────────────
 
-home_ips = [
+management_ips = [
   "1.2.3.4",
   "5.6.7.8",
 ]

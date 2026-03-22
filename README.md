@@ -8,15 +8,15 @@ instance on Oracle Cloud Free Tier, with 3X-UI installed via cloud-init on first
 - **VCN** + subnet + internet gateway + route table — **IPv4 by default**; set **`enable_ipv6 = true`** for dual-stack (VCN IPv6, `::/0` routes, IPv6 VLESS rule, VNIC IPv6)
 - **Security List** (Oracle-layer firewall):
   - VLESS port open to the world on IPv4; when `enable_ipv6`, also on `::/0`
-  - SSH and panel restricted to your home IPs (IPv4)
-- **Host firewall:** `iptables` via `/etc/iptables/rules.v4` (not UFW). Oracle [documents](https://docs.oracle.com/en-us/iaas/Content/Compute/known-issues.htm#ufw) that UFW on Ubuntu OCI can break boot volume networking and cause misleading **“No route to host”** on TCP while ICMP still works from allowed sources ([discussion](https://superuser.com/questions/1487012/no-route-to-host-when-trying-to-connect-to-a-tcp-service-on-an-oracle-cloud-in)).
+  - SSH and panel restricted to **`management_ips`** (IPv4 admin sources only)
+- **Host firewall:** `iptables` with rules in `/etc/iptables/rules.v4` (UFW is not used; see [Oracle Compute guidance](https://docs.oracle.com/en-us/iaas/Content/Compute/known-issues.htm#ufw) for Ubuntu on OCI).
 - **Ubuntu 22.04** (default) or **Debian 12** instance (`VM.Standard.A1.Flex` by default; use `VM.Standard.E2.1.Micro` where that shape exists in the chosen AD)
 - **Auto-generated panel credentials** (random username + password, retrievable via `terraform output`)
 - **cloud-init bootstrap** that automatically:
   - Updates the system
   - Creates a sudo user with your SSH key
   - Hardens SSH (custom port, key-only auth, no root login)
-  - Configures **iptables** on the host (mirrors the Security List intent; OCI discourages UFW on Ubuntu)
+  - Configures **iptables** on the host (aligned with the Security List)
   - Configures Fail2ban (SSH brute-force protection)
   - Enables automatic security updates
   - Applies kernel hardening (sysctl — IPv4/IPv6)
@@ -41,7 +41,7 @@ If you have never used Oracle Cloud before, follow these steps to create an acco
 ### 1. Create a free Oracle Cloud account
 
 1. Go to [cloud.oracle.com](https://cloud.oracle.com/) and click **Sign Up**
-2. Choose your **home region** — this cannot be changed later and determines where free-tier resources are available. Pick a region geographically close to where the proxy will be used (e.g. `eu-frankfurt-1` for Europe, `us-ashburn-1` for US East)
+2. Choose your **subscription region** — this cannot be changed later and determines where free-tier resources are available. Pick a region close to where the proxy will run (e.g. `eu-frankfurt-1`, `us-ashburn-1`)
 3. Complete the sign-up (a credit card is required for verification but will not be charged for always-free resources)
 4. Wait for the account to be provisioned (usually a few minutes, sometimes up to 24 hours)
 
@@ -63,7 +63,7 @@ If you have never used Oracle Cloud before, follow these steps to create an acco
 1. Your region is shown in the top bar of the console (e.g. `Germany Central (Frankfurt)`)
 2. The region identifier is in the format `eu-frankfurt-1` — see the [full region list](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm)
 
-> **Availability domain** is auto-discovered — you do **not** need to look it up. OCI periodically rotates AD name prefixes; the module queries the current name at apply time via `oci_identity_availability_domains`. If your region has multiple ADs and you get "Out of host capacity", set `availability_domain_number = 2` (or 3) in tfvars.
+> **Availability domain** is resolved automatically when `availability_domain` is unset (`oci_identity_availability_domains`).
 
 ## OCI API key setup
 
@@ -103,6 +103,7 @@ You now have everything needed to fill in `terraform.tfvars`:
 | `private_key_path` | Path to `~/.oci/oci_api_key.pem` |
 | `region` | Top bar of console (e.g. `eu-frankfurt-1`) |
 | `compartment_id` | Same as `tenancy_ocid` for free tier |
+| `management_ips` | Your public IPv4 addresses allowed to use SSH and the panel |
 
 ## Changing region
 
@@ -218,7 +219,7 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 - **Non-interactive apply:** `export TF_INPUT=0` and use `terraform apply -auto-approve` (or `-input=false` with a plan file).
 - **OCI API key:** store the PEM in a secret and expose it as **`TF_VAR_private_key`**; leave `private_key_path` unset (or empty) in that environment. The root module accepts either a file path or inline PEM.
 - **SSH key:** set **`TF_VAR_ssh_public_key`** from a deploy key or generated key pair stored in repo secrets.
-- **Runner egress IP:** GitHub-hosted runners use dynamic IPs. Either add the runner’s current egress to `home_ips` for that run, use a self-hosted runner with a fixed IP, or temporarily widen OCI and host firewall rules for the job (not recommended for production panels).
+- **Runner egress IP:** GitHub-hosted runners use dynamic IPs. Add the runner’s current egress to `management_ips` for that run, use a self-hosted runner with a fixed IP, or temporarily widen firewall rules (avoid for production panels).
 - **Parallel jobs:** set **`deployment_id`** (e.g. `${{ github.run_id }}`) so VCN `dns_label` and resource display names stay unique in one tenancy.
 - **State:** default is **local** `terraform.tfstate` (gitignored). For pipelines, configure a **remote backend** (OCI Object Storage, Terraform Cloud, etc.) so `apply` and `destroy` share state.
 
@@ -254,20 +255,11 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 - **Higher `vm.swappiness`** so the kernel is willing to use that compressed “swap” before processes die.
 - **Small journald caps** so logs do not eat the boot volume.
 - **Docker log rotation** (`daemon.json`: 10 MB × 2 files per container) so container stdout does not grow without bound.
-- **No in-container Fail2ban** for 3X-UI — the host already runs Fail2ban for SSH, and the panel is only exposed to your `home_ips` in OCI and on-host `iptables`. That drops a second Fail2ban stack inside the container and saves memory.
+- **No in-container Fail2ban** for 3X-UI — the host runs Fail2ban for SSH, and the panel is only reachable from `management_ips` (OCI + `iptables`).
 
 **Not capped:** the 3X-UI service is **not** given a hard Docker memory limit, so Xray can burst under load; on 1 GB you should still keep inbound/client counts modest and watch `free -h` / `docker stats` after changes.
 
 **Optional later:** if you need more headroom, move to a paid shape, add a **dedicated disk swapfile** (slower than zram but larger), lengthen the Watchtower interval, or turn Watchtower off and pull images manually.
-
-## Troubleshooting
-
-| Symptom | Typical fix |
-|--------|-------------|
-| `400-CannotParseRequest` on launch | Prefer auto AD (`availability_domain` unset); if you set it, paste the current name from Console. Ensure `compartment_id` is a compartment/tenancy OCID, not a resource OCID. |
-| Out of capacity / `500` on launch | Try `availability_domain_number` 2 or 3, another time of day, or another region after `destroy` + `apply`. Use `-replace=oci_core_instance.proxy` if state is stuck after a failed create. |
-| `404` on launch | Often **shape not in that AD** — `terraform plan` runs a shape check; use `VM.Standard.A1.Flex` or pick a shape from `oci compute shape list`. Confirm `compartment_id`, `region`, and optional `host_image_ocid`. |
-| `404` on CreateVcn | Use root or a normal compartment (not a restricted PSM compartment); ensure IAM allows `manage virtual-network-family` there. |
 
 ## Security notes
 
@@ -278,4 +270,4 @@ Everything is fully ephemeral — destroy and re-apply to get a clean instance.
 - The OCI Security List and host `iptables` rules provide two independent firewall layers
 - Fail2ban adds brute-force protection as a third layer
 - SSH password auth is disabled; key-only access only
-- **`enable_ipv6`**: dual-stack VLESS and public IPv6 when `true`; SSH/panel remain restricted to `home_ips` (IPv4). Toggling replaces the subnet (OCI cannot remove a subnet IPv6 prefix in place) and usually replaces the instance — review `terraform plan`.
+- **`enable_ipv6`**: dual-stack VLESS and public IPv6 when `true`; SSH and the panel stay limited to **`management_ips`** (IPv4). Toggling replaces the subnet and usually the instance — review `terraform plan`.

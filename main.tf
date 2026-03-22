@@ -79,7 +79,7 @@ data "oci_core_shapes" "instance_ad" {
 check "instance_shape_in_availability_domain" {
   assert {
     condition     = length([for s in data.oci_core_shapes.instance_ad.shapes : s if s.name == var.instance_shape]) > 0
-    error_message = "Shape ${var.instance_shape} is not available in AD ${local.resolved_availability_domain} (${var.region}). Try another availability_domain_number, set availability_domain from the Console, or pick a shape from: oci compute shape list --compartment-id <ocid> --availability-domain \"${local.resolved_availability_domain}\" --region ${var.region} --all"
+    error_message = "Shape ${var.instance_shape} not available in AD ${local.resolved_availability_domain}. Try another availability_domain_number or shape (oci compute shape list … --availability-domain \"${local.resolved_availability_domain}\" --region ${var.region})."
   }
 }
 
@@ -140,20 +140,16 @@ locals {
 check "host_platform_image_found" {
   assert {
     condition     = length(local._image_id_candidates) > 0
-    error_message = "No platform image for host_os=${var.host_os}, shape=${var.instance_shape}, region=${var.region}. Set host_image_ocid from Console → Compute → Images, or try host_os = \"debian-12\"."
+    error_message = "No platform image for host_os=${var.host_os}, shape=${var.instance_shape}, region=${var.region}. Set host_image_ocid or change host_os/shape."
   }
 }
 
 locals {
   host_image_id = try(local._image_id_candidates[0], null)
 
-  # Build /32 CIDR list from home IPs for Security List rules
-  home_ip_cidrs = [for ip in var.home_ips : "${ip}/32"]
+  management_ip_cidrs = [for ip in var.management_ips : "${ip}/32"]
+  fail2ban_ignoreip   = join(" ", concat(["127.0.0.1/8", "::1"], var.management_ips))
 
-  # Fail2ban ignoreip space-separated string
-  fail2ban_ignoreip = join(" ", concat(["127.0.0.1/8", "::1"], var.home_ips))
-
-  # CI-friendly auth: PEM string wins over file path (GitHub Actions has no ~/.oci key file).
   oci_use_inline_key            = var.private_key != null ? length(trimspace(var.private_key)) > 0 : false
   oci_private_key_inline        = local.oci_use_inline_key ? trimspace(var.private_key) : null
   oci_private_key_path_resolved = local.oci_use_inline_key ? null : pathexpand(var.private_key_path)
@@ -263,13 +259,12 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  # SSH — restricted to home IPs only
   dynamic "ingress_security_rules" {
-    for_each = local.home_ip_cidrs
+    for_each = local.management_ip_cidrs
     content {
       protocol    = "6"
       source      = ingress_security_rules.value
-      description = "SSH from home (${ingress_security_rules.value})"
+      description = "SSH from ${ingress_security_rules.value}"
       tcp_options {
         min = var.ssh_port
         max = var.ssh_port
@@ -277,13 +272,12 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  # 3X-UI panel — restricted to home IPs only
   dynamic "ingress_security_rules" {
-    for_each = local.home_ip_cidrs
+    for_each = local.management_ip_cidrs
     content {
       protocol    = "6"
       source      = ingress_security_rules.value
-      description = "3X-UI panel from home (${ingress_security_rules.value})"
+      description = "3X-UI panel from ${ingress_security_rules.value}"
       tcp_options {
         min = var.panel_port
         max = var.panel_port
@@ -291,13 +285,12 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  # ICMP — restricted to home IPs (ping for diagnostics)
   dynamic "ingress_security_rules" {
-    for_each = local.home_ip_cidrs
+    for_each = local.management_ip_cidrs
     content {
       protocol    = "1" # ICMP
       source      = ingress_security_rules.value
-      description = "ICMP from home (${ingress_security_rules.value})"
+      description = "ICMP from ${ingress_security_rules.value}"
       icmp_options {
         type = 8 # Echo request
       }
@@ -382,7 +375,7 @@ resource "oci_core_instance" "proxy" {
       panel_username     = local.panel_username
       panel_password     = local.panel_password
       vless_port         = var.vless_port
-      home_ips_space     = join(" ", var.home_ips)
+      management_ips_space = join(" ", var.management_ips)
       fail2ban_ignoreip  = local.fail2ban_ignoreip
     }))
   }
@@ -390,7 +383,7 @@ resource "oci_core_instance" "proxy" {
   lifecycle {
     precondition {
       condition     = local.host_image_id != null && local.host_image_id != ""
-      error_message = "host_image_id is unset: fix OS image lookup (see check host_platform_image_found) or set host_image_ocid in tfvars."
+      error_message = "host_image_id is unset — set host_image_ocid or fix OS image lookup."
     }
     ignore_changes = [
       source_details,

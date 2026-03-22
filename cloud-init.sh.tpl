@@ -33,7 +33,7 @@ PANEL_PORT="${panel_port}"
 PANEL_USERNAME="${panel_username}"
 PANEL_PASSWORD="${panel_password}"
 VLESS_PORT="${vless_port}"
-HOME_IPS="${home_ips_space}"          # space-separated list
+MGMT_IPS="${management_ips_space}"
 FAIL2BAN_IGNOREIP="${fail2ban_ignoreip}"
 
 # =============================================================================
@@ -127,17 +127,10 @@ set_ssh_opt "ClientAliveCountMax" "2"
 set_ssh_opt "LoginGraceTime"         "30"
 
 sshd -t || { echo "ERROR: sshd config invalid!"; cp "$${SSHD_CONFIG}.bak" "$SSHD_CONFIG"; exit 1; }
-# Apply new port before host firewall: sshd must listen on $SSH_PORT before we tighten INPUT.
 systemctl restart ssh
 echo "SSH configured and listening on port $SSH_PORT."
 
-# =============================================================================
-#  4. Host firewall (iptables — OCI Ubuntu: do not use UFW)
-# =============================================================================
-# Oracle: UFW can strip rules needed for boot/block volumes and break inbound TCP
-# (clients may see "No route to host"). Use /etc/iptables/rules.v4 instead.
-# https://docs.oracle.com/en-us/iaas/Content/Compute/known-issues.htm#ufw
-# https://docs.oracle.com/en-us/iaas/Content/Compute/References/bestpracticescompute.htm#Essentia
+# 4. Host firewall (iptables; Oracle recommends editing rules via rules.v4 on Ubuntu OCI)
 echo ""
 echo "── [4/9] Host firewall (iptables) ───────────────────────────────"
 
@@ -156,10 +149,8 @@ if [[ -f /etc/iptables/rules.v6 ]]; then
   ip6tables-restore < /etc/iptables/rules.v6 || true
 fi
 
-# Insert each rule immediately before the first REJECT/DROP on INPUT (so it is not below a terminal rule).
 oci_insert_input() {
   local num
-  # With -n, columns are: num pkts bytes target prot ... — target is $4
   num=$(iptables -L INPUT --line-numbers -nv 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && ($4 == "REJECT" || $4 == "DROP") { print $1; exit }')
   if [[ -n "$num" ]] && [[ "$num" =~ ^[0-9]+$ ]]; then
     iptables -I INPUT "$num" "$@"
@@ -171,7 +162,7 @@ oci_insert_input() {
 oci_insert_input -p tcp -m tcp --dport "$VLESS_PORT" -j ACCEPT
 echo "Port $VLESS_PORT/tcp (VLESS) allowed (iptables)."
 
-for ip in $HOME_IPS; do
+for ip in $MGMT_IPS; do
   oci_insert_input -p tcp -s "$ip" -m tcp --dport "$SSH_PORT" -j ACCEPT
   oci_insert_input -p tcp -s "$ip" -m tcp --dport "$PANEL_PORT" -j ACCEPT
   echo "SSH ($SSH_PORT) and panel ($PANEL_PORT) allowed from $ip (iptables)."
@@ -306,7 +297,7 @@ echo "Kernel hardening applied."
 # Non-interactive, matches upstream Docker guidance:
 # https://github.com/MHSanaei/3x-ui/wiki/Installation#using-docker-compose
 # Panel listens on 2053 inside the image until we apply setting -port to match $PANEL_PORT
-# (Oracle Security List + UFW already use PANEL_PORT).
+# Panel port matches OCI security list + host iptables.
 echo ""
 echo "── [8/9] Docker, 3X-UI (Compose), Watchtower ────────────────────"
 
@@ -339,7 +330,7 @@ services:
       - ./db:/etc/x-ui
       - ./cert:/root/cert
     environment:
-      # Host fail2ban already protects SSH; panel is restricted by UFW. Saves RAM vs in-container fail2ban.
+      # Host fail2ban for SSH; panel allowed only from management IPs on host + OCI.
       XUI_ENABLE_FAIL2BAN: "false"
     tty: true
     network_mode: host
@@ -410,6 +401,6 @@ echo "  Bootstrap complete: $(date)"
 echo "  SSH port  : $SSH_PORT"
 echo "  Panel port: $PANEL_PORT"
 echo "  VLESS port: $VLESS_PORT"
-echo "  Home IPs  : $HOME_IPS"
+echo "  Management IPs: $MGMT_IPS"
 echo "  Status    : $BOOTSTRAP_STATUS"
 echo "================================================================"

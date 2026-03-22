@@ -41,7 +41,7 @@ output "ssh_command" {
 }
 
 output "panel_url" {
-  description = "3X-UI admin panel URL (accessible from your home IPs only)."
+  description = "3X-UI admin panel URL (management_ips only)."
   value       = "http://${oci_core_instance.proxy.public_ip}:${var.panel_port}"
 }
 
@@ -58,8 +58,8 @@ output "oracle_security_list_summary" {
   description = "Summary of what the Oracle Security List allows."
   value = {
     vless_proxy = var.enable_ipv6 ? "TCP ${var.vless_port} open to 0.0.0.0/0 and ::/0" : "TCP ${var.vless_port} open to 0.0.0.0/0 only (IPv4)"
-    ssh         = "TCP ${var.ssh_port} open to: ${join(", ", var.home_ips)}"
-    panel       = "TCP ${var.panel_port} open to: ${join(", ", var.home_ips)}"
+    ssh         = "TCP ${var.ssh_port} open to: ${join(", ", var.management_ips)}"
+    panel       = "TCP ${var.panel_port} open to: ${join(", ", var.management_ips)}"
   }
 }
 
